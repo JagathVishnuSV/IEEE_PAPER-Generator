@@ -1,0 +1,240 @@
+# utils/ieee_generator.py
+
+from docx import Document
+from docx.shared import Pt, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.section import WD_SECTION
+
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from io import BytesIO
+import base64
+import logging
+import matplotlib.pyplot as plt
+from PIL import Image
+import tempfile
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def generate_latex_formula_image(latex_code: str) -> str | None:
+    try:
+        fig, ax = plt.subplots(figsize=(2, 0.5))
+        ax.text(0.5, 0.5, f"${latex_code}$", fontsize=14, ha='center', va='center')
+        ax.axis('off')
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            plt.savefig(tmp.name, format='png', bbox_inches='tight', transparent=True)
+            plt.close(fig)
+            return tmp.name
+    except Exception as e:
+        logger.error(f"Formula rendering failed: {e}")
+        return None
+
+def set_ieee_column_layout(section):
+    sectPr = section._sectPr
+    cols = OxmlElement('w:cols')
+    cols.set(qn('w:num'), '2')
+    cols.set(qn('w:space'), '720')
+    sectPr.append(cols)
+
+def generate_ieee_paper(data: dict) -> bytes:
+    try:
+        doc = Document()
+
+        style = doc.styles['Normal']
+        style.font.name = 'Times New Roman'
+        style.font.size = Pt(10)
+
+        # Page setup
+        section = doc.sections[0]
+        section.page_width = Inches(8.5)
+        section.page_height = Inches(11)
+        section.left_margin = Inches(1.0)
+        section.right_margin = Inches(1.0)
+        section.top_margin = Inches(1.0)
+        section.bottom_margin = Inches(1.0)
+
+        # === SINGLE COLUMN FOR TITLE ===
+        title = doc.add_paragraph()
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = title.add_run(data['title'].upper())
+        run.bold = True
+        run.font.size = Pt(16)
+
+        for line in [", ".join(data['authors']),
+                     "; ".join(data['affiliations']),
+                     ", ".join(data['emails'])]:
+            para = doc.add_paragraph(line)
+            para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        doc.add_paragraph()  # spacing
+
+        # === CONTINUOUS SECTION BREAK ===
+        doc.add_section(WD_SECTION.CONTINUOUS)
+        section2 = doc.sections[-1]
+        set_ieee_column_layout(section2)
+
+        # === ABSTRACT & KEYWORDS ===
+        doc.add_paragraph("Abstract", style="Heading 2")
+        doc.add_paragraph(data['abstract'])
+
+        doc.add_paragraph("Keywords", style="Heading 2")
+        doc.add_paragraph(", ".join(data['keywords']))
+
+        figure_count = 1
+        table_count = 1
+
+        for idx, section_data in enumerate(data['sections'], 1):
+            heading = doc.add_paragraph(f"{idx}. {section_data['heading'].upper()}")
+            heading.runs[0].bold = True
+            heading.paragraph_format.space_before = Pt(12)
+            heading.paragraph_format.space_after = Pt(6)
+
+            content = doc.add_paragraph(section_data['content'])
+            content.paragraph_format.first_line_indent = Inches(0.5)
+
+            for img in section_data.get('images', []):
+                try:
+                    img_stream = BytesIO(base64.b64decode(img['data']))
+                    doc.add_picture(img_stream, width=Inches(3))
+                    caption = doc.add_paragraph(f"Fig. {figure_count}: {img['caption']}")
+                    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    figure_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to add image: {e}")
+
+            for table_data in section_data.get('tables', []):
+                try:
+                    table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
+                    table.style = 'Table Grid'
+                    for r, row in enumerate(table_data):
+                        for c, val in enumerate(row):
+                            table.cell(r, c).text = str(val)
+                    doc.add_paragraph(f"Table {table_count}: Data Table").alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    table_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to render table: {e}")
+
+            for f_idx, formula in enumerate(section_data.get('formulas', []), 1):
+                img_path = generate_latex_formula_image(formula)
+                if img_path:
+                    doc.add_picture(img_path, width=Inches(2))
+                    caption = doc.add_paragraph(f"Equation {idx}.{f_idx}: {formula}")
+                    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # === REFERENCES ===
+        doc.add_paragraph("References", style="Heading 2")
+        for i, ref in enumerate(data['references'], 1):
+            doc.add_paragraph(f"[{i}] {ref}")
+
+        buffer = BytesIO()
+        doc.save(buffer)
+        return buffer.getvalue()
+
+    except Exception as e:
+        logger.error(f"IEEE document generation failed: {e}")
+        raise RuntimeError(f"Failed to generate document: {e}")
+
+========================================================
+app.py
+# main.py
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
+import base64
+import io
+import logging
+import re
+
+from utils.ieee_generator import generate_ieee_paper
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or ["http://localhost:3000"] for stricter
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+LATEX_PATTERN = r"\\[a-zA-Z]+(\{[^}]*\})*"
+
+class ImageModel(BaseModel):
+    caption: str
+    data: str  # base64-encoded PNG
+
+class SectionModel(BaseModel):
+    heading: str
+    content: str
+    images: Optional[List[ImageModel]] = []
+    tables: Optional[List[List[List[str]]]] = []
+    formulas: Optional[List[str]] = []
+
+class PaperData(BaseModel):
+    title: str
+    authors: List[str]
+    affiliations: List[str]
+    emails: List[str]
+    abstract: str
+    keywords: List[str]
+    sections: List[SectionModel]
+    references: List[str]
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error: {exc}")
+    return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+@app.post("/generate")
+async def generate_paper(data: PaperData):
+    try:
+        validate_data(data)
+        word_bytes = generate_ieee_paper(data.dict())
+        return StreamingResponse(
+            io.BytesIO(word_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": "attachment; filename=ieee_paper.docx"}
+        )
+    except Exception as e:
+        logger.exception("Error generating document")
+        raise HTTPException(status_code=400, detail=str(e))
+
+def validate_data(data: PaperData):
+    if not data.title.strip():
+        raise ValueError("Title is required")
+    if not all(author.strip() for author in data.authors):
+        raise ValueError("All authors must be non-empty")
+    if not all(aff.strip() for aff in data.affiliations):
+        raise ValueError("All affiliations must be non-empty")
+    if not all(email.strip() for email in data.emails):
+        raise ValueError("All emails must be non-empty")
+    if not data.abstract.strip():
+        raise ValueError("Abstract is required")
+    if not data.keywords:
+        raise ValueError("At least one keyword is required")
+    if not data.sections:
+        raise ValueError("At least one section is required")
+
+    for idx, section in enumerate(data.sections):
+        if not section.heading.strip() or not section.content.strip():
+            raise ValueError(f"Section {idx + 1} is missing heading or content")
+
+        for img in section.images or []:
+            try:
+                base64.b64decode(img.data)
+            except Exception:
+                raise ValueError(f"Invalid base64 image data in section '{section.heading}'")
+
+        # Safe LaTeX filtering, log and skip invalid ones
+        if section.formulas:
+            section.formulas = [
+                formula for formula in section.formulas
+                if re.match(LATEX_PATTERN, formula.strip())
+            ]
+====================================================================

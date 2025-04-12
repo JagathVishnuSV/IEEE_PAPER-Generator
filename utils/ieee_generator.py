@@ -8,6 +8,7 @@ from docx.oxml.ns import qn
 from io import BytesIO
 import base64
 import logging
+import re
 import matplotlib.pyplot as plt
 from PIL import Image
 import tempfile
@@ -15,6 +16,19 @@ from docx.shared import Pt, Inches, RGBColor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def to_roman(num):
+    roman_map = [
+        (1000, 'M'), (900, 'CM'), (500, 'D'), (400, 'CD'),
+        (100, 'C'), (90, 'XC'), (50, 'L'), (40, 'XL'),
+        (10, 'X'), (9, 'IX'), (5, 'V'), (4, 'IV'), (1, 'I')
+    ]
+    result = ""
+    for val, sym in roman_map:
+        while num >= val:
+            result += sym
+            num -= val
+    return result
 
 def generate_latex_formula_image(latex_code: str) -> str | None:
     try:
@@ -31,6 +45,35 @@ def generate_latex_formula_image(latex_code: str) -> str | None:
 
 
 logger = logging.getLogger(__name__)
+def add_hyperlinks(paragraph, text):
+    hyperlink_pattern = r'\[([^\]]+)\]\((https?://[^\)]+)\)'
+    last_idx = 0
+    for match in re.finditer(hyperlink_pattern, text):
+        start, end = match.span()
+        if start > last_idx:
+            paragraph.add_run(text[last_idx:start])
+        run = paragraph.add_run(match.group(1))
+        run.font.color.rgb = RGBColor(0, 0, 255)
+        run.font.underline = True
+        last_idx = end
+    if last_idx < len(text):
+        paragraph.add_run(text[last_idx:])
+
+def insert_footnotes(paragraph, content):
+    footnote_pattern = r"\[\[footnote:(.*?)\]\]"
+    matches = re.findall(footnote_pattern, content)
+    for note in matches:
+        content = content.replace(f"[[footnote:{note}]]", f"[*] {note}")
+    paragraph.add_run(content)
+
+def insert_appendix(doc, appendix_data):
+    if not appendix_data:
+        return
+    doc.add_paragraph("Appendix", style="Heading 2")
+    for idx, item in enumerate(appendix_data, 1):
+        para = doc.add_paragraph(f"{chr(64+idx)}. {item}")
+        para.paragraph_format.first_line_indent = Inches(0.5)
+        para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
 def generate_ieee_paper(data: dict) -> bytes:
     try:
@@ -87,18 +130,22 @@ def generate_ieee_paper(data: dict) -> bytes:
 
         for idx, section_data in enumerate(data['sections'], 1):
             # Section Heading
-            heading = doc.add_paragraph(f"{idx}. {section_data['heading'].upper()}")
-            format_heading(heading)
+            roman_idx = to_roman(idx)
+            heading = doc.add_paragraph(f"{roman_idx}. {section_data['heading'].upper()}")
 
             if 'subsections' in section_data:
                 for sub_idx, sub in enumerate(section_data['subsections'], 1):
-                    subheading = doc.add_paragraph(f"{idx}.{sub_idx} {sub['heading']}")
-                    format_heading(subheading)
+                    alpha = chr(64 + sub_idx)  # A, B, C...
+                    subheading = doc.add_paragraph(f"{to_roman(idx)}.{alpha} {sub['heading']}")
+
 
                     if 'content' in sub:
-                        content_para = doc.add_paragraph(sub['content'])
+                        content_para = doc.add_paragraph()
                         content_para.paragraph_format.first_line_indent = Inches(0.5)
                         content_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                        insert_footnotes(content_para, sub['content'])
+                        add_hyperlinks(content_para, sub['content'])
+
 
                     for img in sub.get('images', []):
                         try:
@@ -130,15 +177,21 @@ def generate_ieee_paper(data: dict) -> bytes:
                             caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
             elif 'content' in section_data:
-                para = doc.add_paragraph(section_data['content'])
+                para = doc.add_paragraph()
                 para.paragraph_format.first_line_indent = Inches(0.5)
                 para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                insert_footnotes(para, section_data['content'])
+                add_hyperlinks(para, section_data['content'])
+
 
         # References
         ref_title = doc.add_paragraph("References")
         ref_title.style = "Heading 2"
         for i, ref in enumerate(data['references'], 1):
             doc.add_paragraph(f"[{i}] {ref}")
+
+        if 'appendix' in data:
+            insert_appendix(doc, data['appendix'])
 
         buffer = BytesIO()
         doc.save(buffer)

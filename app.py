@@ -7,7 +7,9 @@ import base64
 import io
 import logging
 import re
-
+from fastapi import File, UploadFile
+from PIL import Image
+from io import BytesIO
 from utils.ieee_generator import generate_ieee_paper
 
 app = FastAPI()
@@ -59,6 +61,27 @@ class PaperData(BaseModel):
     appendix: Optional[List[str]] = []
 
 # ----------- Error Handler -----------
+
+
+@app.post("/upload-image")
+async def convert_image_to_base64(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        image = Image.open(BytesIO(contents))
+
+        # Convert image to standardized PNG format in memory
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        return {
+            "filename": file.filename,
+            "format": "PNG",
+            "base64": encoded
+        }
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):

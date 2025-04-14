@@ -74,11 +74,11 @@ def insert_appendix(doc, appendix_data):
         para = doc.add_paragraph(f"{chr(64+idx)}. {item}")
         para.paragraph_format.first_line_indent = Inches(0.5)
         para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-
 def generate_ieee_paper(data: dict) -> bytes:
     try:
         doc = Document()
 
+        # Global style
         normal_style = doc.styles['Normal']
         normal_style.font.name = 'Times New Roman'
         normal_style.font.size = Pt(10)
@@ -94,104 +94,116 @@ def generate_ieee_paper(data: dict) -> bytes:
         set_single_column_layout(section)
 
         # Title
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run(data['title'].upper())
+        title_para = doc.add_paragraph()
+        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = title_para.add_run(data['title'].upper())
         run.bold = True
         run.font.size = Pt(16)
         run.font.color.rgb = RGBColor(0, 0, 0)
 
-        for line in [", ".join(data['authors']),
-                     "; ".join(data['affiliations']),
-                     ", ".join(data['emails'])]:
+        for line in [", ".join(data['authors']), "; ".join(data['affiliations']), ", ".join(data['emails'])]:
             para = doc.add_paragraph(line)
             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
         doc.add_paragraph()
-
-        # New section for two-column
-        new_section = doc.add_section(start_type=0)
-        set_ieee_column_layout(new_section)
+        doc.add_section(0)
+        set_ieee_column_layout(doc.sections[-1])
 
         # Abstract
-        doc.add_paragraph("Abstract", style="Heading 2")
-        abs_para = doc.add_paragraph(data['abstract'])
-        abs_para.paragraph_format.first_line_indent = Inches(0.5)
-        abs_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        abstract = doc.add_paragraph("Abstract")
+        format_heading(abstract)
+        para = doc.add_paragraph(data['abstract'])
+        para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
         # Keywords
-        doc.add_paragraph("Keywords", style="Heading 2")
-        kw_para = doc.add_paragraph(", ".join(data['keywords']))
-        kw_para.paragraph_format.first_line_indent = Inches(0.5)
-        kw_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        keywords = doc.add_paragraph("Keywords")
+        format_heading(keywords)
+        k = doc.add_paragraph(", ".join(data['keywords']))
+        k.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
         figure_count = 1
         table_count = 1
 
         for idx, section_data in enumerate(data['sections'], 1):
-            # Section Heading
             roman_idx = to_roman(idx)
             heading = doc.add_paragraph(f"{roman_idx}. {section_data['heading'].upper()}")
+            format_heading(heading)
 
-            if 'subsections' in section_data:
-                for sub_idx, sub in enumerate(section_data['subsections'], 1):
-                    alpha = chr(64 + sub_idx)  # A, B, C...
-                    subheading = doc.add_paragraph(f"{to_roman(idx)}.{alpha} {sub['heading']}")
+            if section_data.get("content", "").strip():
+                p = doc.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                insert_footnotes(p, section_data['content'])
+                add_hyperlinks(p, section_data['content'])
 
+            for img in section_data.get("images", []):
+                img_stream = BytesIO(base64.b64decode(img["data"]))
+                doc.add_picture(img_stream, width=Inches(3))
+                caption = doc.add_paragraph(f"Fig. {figure_count}: {img['caption']}")
+                caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                figure_count += 1
 
-                    if 'content' in sub:
-                        content_para = doc.add_paragraph()
-                        content_para.paragraph_format.first_line_indent = Inches(0.5)
-                        content_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                        insert_footnotes(content_para, sub['content'])
-                        add_hyperlinks(content_para, sub['content'])
+            for table_data in section_data.get("tables", []):
+                table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
+                table.style = "Table Grid"
+                for r, row in enumerate(table_data):
+                    for c, val in enumerate(row):
+                        table.cell(r, c).text = str(val)
+                doc.add_paragraph(f"Table {table_count}: Data Table").alignment = WD_ALIGN_PARAGRAPH.CENTER
+                table_count += 1
 
+            for f_idx, formula in enumerate(section_data.get("formulas", []), 1):
+                img_path = generate_latex_formula_image(formula)
+                if img_path:
+                    doc.add_picture(img_path, width=Inches(2))
+                    caption = doc.add_paragraph(f"Equation {idx}.{f_idx}: {formula}")
+                    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-                    for img in sub.get('images', []):
-                        try:
-                            img_stream = BytesIO(base64.b64decode(img['data']))
-                            doc.add_picture(img_stream, width=Inches(3))
-                            cap = doc.add_paragraph(f"Fig. {figure_count}: {img['caption']}")
-                            cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            figure_count += 1
-                        except Exception as e:
-                            logger.error(f"Failed to add image: {e}")
+            for sub_idx, sub in enumerate(section_data.get("subsections", []), 1):
+                subheading = doc.add_paragraph(f"{roman_idx}.{chr(64 + sub_idx)} {sub['heading']}")
+                format_heading(subheading)
 
-                    for table_data in sub.get('tables', []):
-                        try:
-                            table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
-                            table.style = 'Table Grid'
-                            for r, row in enumerate(table_data):
-                                for c, val in enumerate(row):
-                                    table.cell(r, c).text = str(val)
-                            doc.add_paragraph(f"Table {table_count}: Data Table").alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            table_count += 1
-                        except Exception as e:
-                            logger.error(f"Failed to render table: {e}")
+                if sub.get("content", "").strip():
+                    p = doc.add_paragraph()
+                    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    insert_footnotes(p, sub['content'])
+                    add_hyperlinks(p, sub['content'])
 
-                    for f_idx, formula in enumerate(sub.get('formulas', []), 1):
-                        img_path = generate_latex_formula_image(formula)
-                        if img_path:
-                            doc.add_picture(img_path, width=Inches(2))
-                            caption = doc.add_paragraph(f"Equation {idx}.{sub_idx}.{f_idx}: {formula}")
-                            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for img in sub.get("images", []):
+                    img_stream = BytesIO(base64.b64decode(img["data"]))
+                    doc.add_picture(img_stream, width=Inches(3))
+                    caption = doc.add_paragraph(f"Fig. {figure_count}: {img['caption']}")
+                    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    figure_count += 1
 
-            elif 'content' in section_data:
-                para = doc.add_paragraph()
-                para.paragraph_format.first_line_indent = Inches(0.5)
-                para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                insert_footnotes(para, section_data['content'])
-                add_hyperlinks(para, section_data['content'])
+                for table_data in sub.get("tables", []):
+                    table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
+                    table.style = "Table Grid"
+                    for r, row in enumerate(table_data):
+                        for c, val in enumerate(row):
+                            table.cell(r, c).text = str(val)
+                    doc.add_paragraph(f"Table {table_count}: Data Table").alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    table_count += 1
 
+                for f_idx, formula in enumerate(sub.get("formulas", []), 1):
+                    img_path = generate_latex_formula_image(formula)
+                    if img_path:
+                        doc.add_picture(img_path, width=Inches(2))
+                        caption = doc.add_paragraph(f"Equation {idx}.{sub_idx}.{f_idx}: {formula}")
+                        caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
         # References
-        ref_title = doc.add_paragraph("References")
-        ref_title.style = "Heading 2"
+        refs = doc.add_paragraph("References")
+        format_heading(refs)
         for i, ref in enumerate(data['references'], 1):
             doc.add_paragraph(f"[{i}] {ref}")
 
-        if 'appendix' in data:
-            insert_appendix(doc, data['appendix'])
+        # Appendix
+        if "appendix" in data:
+            appendix = doc.add_paragraph("Appendix")
+            format_heading(appendix)
+            for i, content in enumerate(data["appendix"], 1):
+                para = doc.add_paragraph(f"{chr(64 + i)}. {content}")
+                para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
         buffer = BytesIO()
         doc.save(buffer)
@@ -200,6 +212,7 @@ def generate_ieee_paper(data: dict) -> bytes:
     except Exception as e:
         logger.error(f"IEEE document generation failed: {e}")
         raise RuntimeError(f"Failed to generate document: {e}")
+
 
 
 def set_single_column_layout(section):

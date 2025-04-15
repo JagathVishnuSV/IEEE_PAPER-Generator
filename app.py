@@ -1,15 +1,12 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-import base64
-import io
 import logging
 import re
-from fastapi import File, UploadFile
-from PIL import Image
 from io import BytesIO
+from PIL import Image
 from utils.ieee_generator import generate_ieee_paper
 
 app = FastAPI()
@@ -32,7 +29,7 @@ LATEX_PATTERN = r"\\[a-zA-Z]+(\{[^}]*\})*"
 
 class ImageData(BaseModel):
     caption: str
-    data: str
+    path: str  # Changed from data to path
 
 class Subsection(BaseModel):
     heading: str
@@ -62,27 +59,6 @@ class PaperData(BaseModel):
 
 # ----------- Error Handler -----------
 
-
-@app.post("/upload-image")
-async def convert_image_to_base64(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        image = Image.open(BytesIO(contents))
-
-        # Convert image to standardized PNG format in memory
-        buffer = BytesIO()
-        image.save(buffer, format="PNG")
-        encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-        return {
-            "filename": file.filename,
-            "format": "PNG",
-            "base64": encoded
-        }
-
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled error: {exc}")
@@ -96,7 +72,7 @@ async def generate_paper(data: PaperData):
         validate_data(data)
         word_bytes = generate_ieee_paper(data.dict())
         return StreamingResponse(
-            io.BytesIO(word_bytes),
+            BytesIO(word_bytes),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={"Content-Disposition": "attachment; filename=ieee_paper.docx"}
         )
@@ -132,10 +108,8 @@ def validate_data(data: PaperData):
             raise ValueError(f"Section {idx + 1} must have content or subsections")
 
         for img in section.images or []:
-            try:
-                base64.b64decode(img.data)
-            except Exception:
-                raise ValueError(f"Invalid base64 image in section '{section.heading}'")
+            if not img.path.strip():
+                raise ValueError(f"Image path is required in section '{section.heading}'")
 
         if section.formulas:
             section.formulas = [f for f in section.formulas if re.match(LATEX_PATTERN, f.strip())]
@@ -146,9 +120,27 @@ def validate_data(data: PaperData):
             if not sub.content.strip():
                 raise ValueError(f"Subsection {idx + 1}.{sub_idx + 1} is missing content")
             for img in sub.images or []:
-                try:
-                    base64.b64decode(img.data)
-                except Exception:
-                    raise ValueError(f"Invalid base64 image in subsection '{sub.heading}'")
+                if not img.path.strip():
+                    raise ValueError(f"Image path is required in subsection '{sub.heading}'")
             if sub.formulas:
-                sub.formulas = [f for f in sub.formulas if re.match(LATEX_PATTERN, f.strip())]
+                sub.formulas = [f for f in sub.formulas if re.match(LATEX_PATTERN, f.strip())] 
+# ----------- Image Upload Endpoint -----------
+
+@app.post("/upload-image")
+async def upload_image(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        image = Image.open(BytesIO(contents))
+
+        # Save the image to a temporary file
+        temp_file_path = f"/tmp/{file.filename}"
+        image.save(temp_file_path, format="PNG")
+
+        return {
+            "filename": file.filename,
+            "path": temp_file_path  # Return the path to the saved image
+        }
+
+    except Exception as e:
+        logger.error(f"Image upload failed: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})

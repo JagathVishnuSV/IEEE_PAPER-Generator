@@ -6,13 +6,10 @@ from docx.shared import RGBColor
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from io import BytesIO
-import base64
 import logging
 import re
 import matplotlib.pyplot as plt
-from PIL import Image
 import tempfile
-from docx.shared import Pt, Inches, RGBColor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,8 +40,6 @@ def generate_latex_formula_image(latex_code: str) -> str | None:
         logger.error(f"Formula rendering failed: {e}")
         return None
 
-
-logger = logging.getLogger(__name__)
 def add_hyperlinks(paragraph, text):
     hyperlink_pattern = r'\[([^\]]+)\]\((https?://[^\)]+)\)'
     last_idx = 0
@@ -74,6 +69,7 @@ def insert_appendix(doc, appendix_data):
         para = doc.add_paragraph(f"{chr(64+idx)}. {item}")
         para.paragraph_format.first_line_indent = Inches(0.5)
         para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
 def generate_ieee_paper(data: dict) -> bytes:
     try:
         doc = Document()
@@ -112,7 +108,7 @@ def generate_ieee_paper(data: dict) -> bytes:
         # Abstract
         abstract = doc.add_paragraph("Abstract")
         format_heading(abstract)
-        para = doc.add_paragraph(data['abstract'])
+        para = doc.add_paragraph (data['abstract'])
         para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
         # Keywords
@@ -136,8 +132,8 @@ def generate_ieee_paper(data: dict) -> bytes:
                 add_hyperlinks(p, section_data['content'])
 
             for img in section_data.get("images", []):
-                img_stream = BytesIO(base64.b64decode(img["data"]))
-                doc.add_picture(img_stream, width=Inches(3))
+                # Use the image path directly
+                doc.add_picture(img["path"], width=Inches(3))
                 caption = doc.add_paragraph(f"Fig. {figure_count}: {img['caption']}")
                 caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 figure_count += 1
@@ -169,8 +165,7 @@ def generate_ieee_paper(data: dict) -> bytes:
                     add_hyperlinks(p, sub['content'])
 
                 for img in sub.get("images", []):
-                    img_stream = BytesIO(base64.b64decode(img["data"]))
-                    doc.add_picture(img_stream, width=Inches(3))
+                    doc.add_picture(img["path"], width=Inches(3))
                     caption = doc.add_paragraph(f"Fig. {figure_count}: {img['caption']}")
                     caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     figure_count += 1
@@ -213,8 +208,6 @@ def generate_ieee_paper(data: dict) -> bytes:
         logger.error(f"IEEE document generation failed: {e}")
         raise RuntimeError(f"Failed to generate document: {e}")
 
-
-
 def set_single_column_layout(section):
     sectPr = section._sectPr
     for col in sectPr.xpath('./w:cols'):
@@ -222,7 +215,6 @@ def set_single_column_layout(section):
     cols = OxmlElement('w:cols')
     cols.set(qn('w:num'), '1')
     sectPr.append(cols)
-
 
 def set_ieee_column_layout(section):
     sectPr = section._sectPr
@@ -232,7 +224,6 @@ def set_ieee_column_layout(section):
     cols.set(qn('w:num'), '2')
     cols.set(qn('w:space'), '720')
     sectPr.append(cols)
-
 
 def format_heading(paragraph):
     run = paragraph.runs[0]

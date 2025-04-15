@@ -70,6 +70,7 @@ def insert_appendix(doc, appendix_data):
         para.paragraph_format.first_line_indent = Inches(0.5)
         para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
+
 def generate_ieee_paper(data: dict) -> bytes:
     try:
         doc = Document()
@@ -106,14 +107,19 @@ def generate_ieee_paper(data: dict) -> bytes:
         set_ieee_column_layout(doc.sections[-1])
 
         # Abstract
-        abstract = doc.add_paragraph("Abstract")
-        format_heading(abstract)
-        para = doc.add_paragraph (data['abstract'])
-        para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        abstract_heading = doc.add_paragraph("Abstract")
+        format_heading(abstract_heading)  # Format the heading
+
+        # Add each paragraph of the abstract
+        for paragraph in data['abstract'].split('\n'):  # Split by new lines for multiple paragraphs
+            para = doc.add_paragraph(paragraph)
+            para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            for run in para.runs:  # Make all runs in the paragraph bold
+                run.bold = True
 
         # Keywords
-        keywords = doc.add_paragraph("Keywords")
-        format_heading(keywords)
+        keywords_heading = doc.add_paragraph("Keywords")
+        format_heading(keywords_heading)  # Format the heading
         k = doc.add_paragraph(", ".join(data['keywords']))
         k.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
@@ -160,7 +166,7 @@ def generate_ieee_paper(data: dict) -> bytes:
 
                 if sub.get("content", "").strip():
                     p = doc.add_paragraph()
-                    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    p.alignment = WD_ALIGN_PARAGRAPH .JUSTIFY
                     insert_footnotes(p, sub['content'])
                     add_hyperlinks(p, sub['content'])
 

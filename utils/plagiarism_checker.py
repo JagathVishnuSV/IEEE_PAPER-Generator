@@ -1,39 +1,78 @@
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-from nltk.stem import PorterStemmer
-from collections import Counter
-import string
-import nltk
+import os
+import re
+import torch
+import logging
+import docx
+from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+from typing import List, Dict
 
-nltk.download('punkt')
-nltk.download('stopwords')
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def preprocess_text(text):
-    """Normalize and clean text"""
-    text = text.lower().translate(str.maketrans('', '', string.punctuation))
-    tokens = word_tokenize(text)
-    stop_words = set(stopwords.words('english'))
-    ps = PorterStemmer()
-    return [ps.stem(w) for w in tokens if w not in stop_words]
+model = SentenceTransformer('all-MiniLM-L6-v2')  # Light, fast BERT model
 
-def check_plagiarism(input_text, existing_texts):
-    """Check for plagiarism with similarity score"""
-    input_words = Counter(preprocess_text(input_text))
-    results = []
+def extract_text_from_docx(file_path: str) -> str:
+    doc = docx.Document(file_path)
+    full_text = []
+    for para in doc.paragraphs:
+        if para.text.strip():
+            full_text.append(para.text.strip())
+    return "\n".join(full_text)
+
+def split_into_sentences(text: str) -> List[str]:
+    # Basic sentence splitting (you can improve with SpaCy/NLTK)
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    return [s.strip() for s in sentences if s.strip()]
+
+def extract_references(text: str) -> List[str]:
+    # Extract references block based on "References" section
+    if "references" not in text.lower():
+        return []
+    refs = text.lower().split("references")[-1]
+    return split_into_sentences(refs)
+
+def check_citations(text: str, references: List[str]) -> Dict[str, bool]:
+    citation_pattern = r"\[(\d+)\]"
+    found = re.findall(citation_pattern, text)
+    ref_map = {str(i+1): ref for i, ref in enumerate(references)}
+    citation_check = {}
+    for c in found:
+        citation_check[f"[{c}]"] = c in ref_map
+    return citation_check
+
+def compute_semantic_similarity(sentences: List[str], threshold: float = 0.85) -> List[Dict]:
+    embeddings = model.encode(sentences, convert_to_tensor=True)
+    sims = cosine_similarity(embeddings.cpu(), embeddings.cpu())
     
-    for text in existing_texts:
-        text_words = Counter(preprocess_text(text))
-        common = sum((input_words & text_words).values())
-        total = sum((input_words | text_words).values())
-        similarity = common / total if total > 0 else 0
-        results.append({
-            'text': text,
-            'similarity': similarity
-        })
-    
-    max_similarity = max(results, key=lambda x: x['similarity'], default={'similarity': 0})
-    return {
-        'is_plagiarized': max_similarity['similarity'] > 0.3,
-        'score': max_similarity['similarity'],
-        'matches': results
-    }
+    flagged = []
+    for i in range(len(sentences)):
+        for j in range(i+1, len(sentences)):
+            if sims[i][j] > threshold:
+                flagged.append({
+                    "sentence_1": sentences[i],
+                    "sentence_2": sentences[j],
+                    "similarity": float(sims[i][j])
+                })
+    return flagged
+
+def analyze_plagiarism(docx_path: str, threshold: float = 0.85) -> Dict:
+    try:
+        logger.info("Extracting text...")
+        text = extract_text_from_docx(docx_path)
+        sentences = split_into_sentences(text)
+        references = extract_references(text)
+        citations = check_citations(text, references)
+        logger.info("Performing semantic analysis...")
+        similar_pairs = compute_semantic_similarity(sentences, threshold)
+
+        return {
+            "total_sentences": len(sentences),
+            "citation_validation": citations,
+            "similar_sentences": similar_pairs,
+            "plagiarism_score": round(len(similar_pairs) / max(1, len(sentences)), 2)
+        }
+
+    except Exception as e:
+        logger.error(f"Plagiarism analysis failed: {e}")
+        raise RuntimeError("Plagiarism analysis failed.")

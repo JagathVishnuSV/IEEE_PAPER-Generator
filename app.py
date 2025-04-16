@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, HTTPException, Request, File, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,7 @@ import re
 from io import BytesIO
 from PIL import Image
 from utils.ieee_generator import generate_ieee_paper
+from utils.plagiarism_checker import analyze_plagiarism
 
 app = FastAPI()
 
@@ -20,6 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,15 @@ class PaperData(BaseModel):
     references: List[str]
     appendix: Optional[List[str]] = []
 
+# ----------- Directory Setup for Uploads -----------
+
+# Set the path to the 'uploads' folder in the current directory
+upload_dir = os.path.join(os.getcwd(), "uploads")
+
+# Ensure the directory exists
+if not os.path.exists(upload_dir):
+    os.makedirs(upload_dir)
+
 # ----------- Error Handler -----------
 
 @app.exception_handler(Exception)
@@ -71,6 +83,12 @@ async def generate_paper(data: PaperData):
     try:
         validate_data(data)
         word_bytes = generate_ieee_paper(data.dict())
+        
+        # Save the generated paper to the 'uploads' folder
+        temp_file_path = os.path.join(upload_dir, "ieee_paper.docx")
+        with open(temp_file_path, "wb") as f:
+            f.write(word_bytes)
+
         return StreamingResponse(
             BytesIO(word_bytes),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -124,6 +142,7 @@ def validate_data(data: PaperData):
                     raise ValueError(f"Image path is required in subsection '{sub.heading}'")
             if sub.formulas:
                 sub.formulas = [f for f in sub.formulas if re.match(LATEX_PATTERN, f.strip())] 
+
 # ----------- Image Upload Endpoint -----------
 
 @app.post("/upload-image")
@@ -132,8 +151,8 @@ async def upload_image(file: UploadFile = File(...)):
         contents = await file.read()
         image = Image.open(BytesIO(contents))
 
-        # Save the image to a temporary file
-        temp_file_path = f"/tmp/{file.filename}"
+        # Save the image to the 'uploads' folder
+        temp_file_path = os.path.join(upload_dir, file.filename)
         image.save(temp_file_path, format="PNG")
 
         return {
@@ -144,3 +163,20 @@ async def upload_image(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Image upload failed: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+# ----------- Plagiarism Check Endpoint -----------
+
+@app.post("/check-plagiarism/")
+async def check_plagiarism(file: UploadFile = File(...)):
+    try:
+        # Save the uploaded file to the 'uploads' folder
+        temp_path = os.path.join(upload_dir, file.filename)
+        with open(temp_path, "wb") as f:
+            f.write(await file.read())
+
+        # Analyze plagiarism using the saved file
+        result = analyze_plagiarism(temp_path)
+        return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

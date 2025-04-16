@@ -1,39 +1,30 @@
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-from nltk.stem import PorterStemmer
-from collections import Counter
-import string
-import nltk
+from plagiarism_checker import similarity_report
 
-nltk.download('punkt')
-nltk.download('stopwords')
-
-def preprocess_text(text):
-    """Normalize and clean text"""
-    text = text.lower().translate(str.maketrans('', '', string.punctuation))
-    tokens = word_tokenize(text)
-    stop_words = set(stopwords.words('english'))
-    ps = PorterStemmer()
-    return [ps.stem(w) for w in tokens if w not in stop_words]
-
-def check_plagiarism(input_text, existing_texts):
-    """Check for plagiarism with similarity score"""
-    input_words = Counter(preprocess_text(input_text))
-    results = []
-    
-    for text in existing_texts:
-        text_words = Counter(preprocess_text(text))
-        common = sum((input_words & text_words).values())
-        total = sum((input_words | text_words).values())
-        similarity = common / total if total > 0 else 0
-        results.append({
-            'text': text,
-            'similarity': similarity
-        })
-    
-    max_similarity = max(results, key=lambda x: x['similarity'], default={'similarity': 0})
-    return {
-        'is_plagiarized': max_similarity['similarity'] > 0.3,
-        'score': max_similarity['similarity'],
-        'matches': results
+external_sources = [
+    {
+        "title": "Original Paper A",
+        "content": "This paper presents a methodology for fraud detection using AI.",
+        "references": ["A. Author, ‘AI in Fraud Detection’, 2023."]
+    },
+    {
+        "title": "Original Paper B",
+        "content": "We explore neural firewalls for online security applications.",
+        "references": ["B. Author, ‘Neural Firewalls’, 2022."]
     }
+]
+
+docx_path = "output/ieee_generated_paper.docx"
+
+report = similarity_report(docx_path, external_sources)
+
+print("Semantic Similarity:")
+for entry in report['semantic_similarity']:
+    print(f" - {entry['title']}: {entry['score']}")
+
+print("\nReference Overlap:")
+for entry in report['reference_overlap']:
+    print(f" - {entry['title']} matched: {entry['matched_references']}")
+
+print("\nCitations in Paper:")
+print(f"Total: {report['citation_analysis']['total']}")
+print(f"Found: {report['citation_analysis']['citations_found']}")

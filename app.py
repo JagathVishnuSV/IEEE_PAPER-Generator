@@ -165,18 +165,23 @@ async def upload_image(file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 # ----------- Plagiarism Check Endpoint -----------
-
 @app.post("/check-plagiarism/")
 async def check_plagiarism(file: UploadFile = File(...)):
     try:
-        # Save the uploaded file to the 'uploads' folder
-        temp_path = os.path.join(upload_dir, file.filename)
+        # Check extension first
+        if not file.filename.endswith(".docx"):
+            raise HTTPException(status_code=400, detail="Only .docx files are supported.")
+
+        temp_path = f"uploads/{file.filename}"
         with open(temp_path, "wb") as f:
             f.write(await file.read())
 
-        # Analyze plagiarism using the saved file
         result = analyze_plagiarism(temp_path)
         return result
 
+    except ValueError as e:
+        logger.error(f"Validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error: " + str(e))

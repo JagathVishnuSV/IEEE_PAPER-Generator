@@ -1,3 +1,4 @@
+from importlib.metadata import PackageNotFoundError
 import os
 import re
 import torch
@@ -12,13 +13,19 @@ logger = logging.getLogger(__name__)
 
 model = SentenceTransformer('all-MiniLM-L6-v2')  # Light, fast BERT model
 
-def extract_text_from_docx(file_path: str) -> str:
-    doc = docx.Document(file_path)
-    full_text = []
-    for para in doc.paragraphs:
-        if para.text.strip():
-            full_text.append(para.text.strip())
-    return "\n".join(full_text)
+def extract_text_from_docx(file_path):
+    try:
+        document = docx.Document(file_path)
+        full_text = []
+        for para in document.paragraphs:
+            full_text.append(para.text)
+        return "\n".join(full_text)
+    except PackageNotFoundError:
+        logger.error("The uploaded file is not a valid .docx file.")
+        raise ValueError("The uploaded file is not a valid .docx file. Please upload a proper Word document.")
+    except Exception as e:
+        logger.error(f"Failed to extract text: {e}")
+        raise ValueError(f"Error reading document: {str(e)}")
 
 def split_into_sentences(text: str) -> List[str]:
     # Basic sentence splitting (you can improve with SpaCy/NLTK)

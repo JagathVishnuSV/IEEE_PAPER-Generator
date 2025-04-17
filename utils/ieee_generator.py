@@ -1,20 +1,21 @@
-from docx import Document
-from docx.shared import Pt, Inches
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.section import WD_SECTION
-from docx.shared import RGBColor
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from io import BytesIO
 import logging
 import re
-import matplotlib.pyplot as plt
 import tempfile
+from io import BytesIO
+
+import matplotlib.pyplot as plt
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.opc.constants import RELATIONSHIP_TYPE
+from docx.shared import Pt, Inches, RGBColor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def to_roman(num):
+
+def to_roman(num: int) -> str:
     roman_map = [
         (1000, 'M'), (900, 'CM'), (500, 'D'), (400, 'CD'),
         (100, 'C'), (90, 'XC'), (50, 'L'), (40, 'XL'),
@@ -26,6 +27,7 @@ def to_roman(num):
             result += sym
             num -= val
     return result
+
 
 def generate_latex_formula_image(latex_code: str) -> str | None:
     try:
@@ -40,196 +42,106 @@ def generate_latex_formula_image(latex_code: str) -> str | None:
         logger.error(f"Formula rendering failed: {e}")
         return None
 
-def add_hyperlinks(paragraph, text):
-    hyperlink_pattern = r'\[([^\]]+)\]\((https?://[^\)]+)\)'
-    last_idx = 0
-    for match in re.finditer(hyperlink_pattern, text):
-        start, end = match.span()
-        if start > last_idx:
-            paragraph.add_run(text[last_idx:start])
-        run = paragraph.add_run(match.group(1))
-        run.font.color.rgb = RGBColor(0, 0, 255)
-        run.font.underline = True
-        last_idx = end
-    if last_idx < len(text):
-        paragraph.add_run(text[last_idx:])
 
-def insert_footnotes(paragraph, content):
-    footnote_pattern = r"\[\[footnote:(.*?)\]\]"
-    matches = re.findall(footnote_pattern, content)
-    for note in matches:
+def add_hyperlink(paragraph, display_text: str, url: str):
+    """Insert a clickable, blue-underlined hyperlink into `paragraph`."""
+    part = paragraph.part
+    r_id = part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+
+    run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+
+    color = OxmlElement('w:color')
+    color.set(qn('w:val'), '0000FF')
+    rPr.append(color)
+
+    underline = OxmlElement('w:u')
+    underline.set(qn('w:val'), 'single')
+    rPr.append(underline)
+
+    run.append(rPr)
+
+    text_elem = OxmlElement('w:t')
+    text_elem.text = display_text
+    run.append(text_elem)
+
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+def add_hyperlinks(paragraph, text: str):
+    """
+    Scan `text` for markdown [text](url) or bare URLs, emit plain text and
+    clickable hyperlinks.
+    """
+    pattern = re.compile(r'\[([^\]]+)\]\((https?://[^\)]+)\)|(https?://[^\s]+)')
+    idx = 0
+    for m in pattern.finditer(text):
+        start, end = m.span()
+        if start > idx:
+            paragraph.add_run(text[idx:start])
+        if m.group(1) and m.group(2):
+            disp, url = m.group(1), m.group(2)
+        else:
+            disp = url = m.group(3)
+        add_hyperlink(paragraph, disp, url)
+        idx = end
+    if idx < len(text):
+        paragraph.add_run(text[idx:])
+
+
+def extract_and_replace_hyperlinks(text: str, start_idx: int = 1) -> tuple[str, list[str]]:
+    """
+    Replace every markdown [text](url) in `text` with [n], return modified
+    text and list of unique URLs found.
+    """
+    pattern = r'\[([^\]]+)\]\((https?://[^\)]+)\)'
+    citations = []
+    ref_map = {}
+    out = text
+
+    for match in re.finditer(pattern, text):
+        _, url = match.groups()
+        if url not in ref_map:
+            ref_map[url] = start_idx + len(citations)
+            citations.append(url)
+        num = ref_map[url]
+        out = out.replace(match.group(0), f"[{num}]")
+
+    return out, citations
+
+
+def insert_footnotes(paragraph, content: str):
+    """
+    Replace [[footnote:Note text]] with “[∗] Note text” inline.
+    """
+    pattern = r"\[\[footnote:(.*?)\]\]"
+    for note in re.findall(pattern, content):
         content = content.replace(f"[[footnote:{note}]]", f"[*] {note}")
     paragraph.add_run(content)
 
-def insert_appendix(doc, appendix_data):
-    if not appendix_data:
-        return
-    doc.add_paragraph("Appendix", style="Heading 2")
-    for idx, item in enumerate(appendix_data, 1):
-        para = doc.add_paragraph(f"{chr(64+idx)}. {item}")
-        para.paragraph_format.first_line_indent = Inches(0.5)
-        para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-
-
-def generate_ieee_paper(data: dict) -> bytes:
-    try:
-        doc = Document()
-
-        # Global style
-        normal_style = doc.styles['Normal']
-        normal_style.font.name = 'Times New Roman'
-        normal_style.font.size = Pt(10)
-
-        section = doc.sections[0]
-        section.page_width = Inches(8.5)
-        section.page_height = Inches(11)
-        section.left_margin = Inches(0.75)
-        section.right_margin = Inches(0.75)
-        section.top_margin = Inches(1.0)
-        section.bottom_margin = Inches(1.0)
-
-        set_single_column_layout(section)
-
-        # Title
-        title_para = doc.add_paragraph()
-        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = title_para.add_run(data['title'].upper())
-        run.bold = True
-        run.font.size = Pt(16)
-        run.font.color.rgb = RGBColor(0, 0, 0)
-
-        for line in [", ".join(data['authors']), "; ".join(data['affiliations']), ", ".join(data['emails'])]:
-            para = doc.add_paragraph(line)
-            para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-        doc.add_paragraph()
-        doc.add_section(0)
-        set_ieee_column_layout(doc.sections[-1])
-
-        # Abstract
-        abstract_heading = doc.add_paragraph("Abstract")
-        format_heading(abstract_heading)  # Format the heading
-
-        # Add each paragraph of the abstract
-        for paragraph in data['abstract'].split('\n'):  # Split by new lines for multiple paragraphs
-            para = doc.add_paragraph(paragraph)
-            para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            for run in para.runs:  # Make all runs in the paragraph bold
-                run.bold = True
-
-        # Keywords
-        keywords_heading = doc.add_paragraph("Keywords")
-        format_heading(keywords_heading)  # Format the heading
-        k = doc.add_paragraph(", ".join(data['keywords']))
-        k.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-
-        figure_count = 1
-        table_count = 1
-
-        for idx, section_data in enumerate(data['sections'], 1):
-            roman_idx = to_roman(idx)
-            heading = doc.add_paragraph(f"{roman_idx}. {section_data['heading'].upper()}")
-            format_heading(heading)
-
-            if section_data.get("content", "").strip():
-                p = doc.add_paragraph()
-                p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                insert_footnotes(p, section_data['content'])
-                add_hyperlinks(p, section_data['content'])
-
-            for img in section_data.get("images", []):
-                # Use the image path directly
-                doc.add_picture(img["path"], width=Inches(3))
-                caption = doc.add_paragraph(f"Fig. {figure_count}: {img['caption']}")
-                caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                figure_count += 1
-
-            for table_data in section_data.get("tables", []):
-                table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
-                table.style = "Table Grid"
-                for r, row in enumerate(table_data):
-                    for c, val in enumerate(row):
-                        table.cell(r, c).text = str(val)
-                doc.add_paragraph(f"Table {table_count}: Data Table").alignment = WD_ALIGN_PARAGRAPH.CENTER
-                table_count += 1
-
-            for f_idx, formula in enumerate(section_data.get("formulas", []), 1):
-                img_path = generate_latex_formula_image(formula)
-                if img_path:
-                    doc.add_picture(img_path, width=Inches(2))
-                    caption = doc.add_paragraph(f"Equation {idx}.{f_idx}: {formula}")
-                    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-            for sub_idx, sub in enumerate(section_data.get("subsections", []), 1):
-                subheading = doc.add_paragraph(f"{roman_idx}.{chr(64 + sub_idx)} {sub['heading']}")
-                format_heading(subheading)
-
-                if sub.get("content", "").strip():
-                    p = doc.add_paragraph()
-                    p.alignment = WD_ALIGN_PARAGRAPH .JUSTIFY
-                    insert_footnotes(p, sub['content'])
-                    add_hyperlinks(p, sub['content'])
-
-                for img in sub.get("images", []):
-                    doc.add_picture(img["path"], width=Inches(3))
-                    caption = doc.add_paragraph(f"Fig. {figure_count}: {img['caption']}")
-                    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    figure_count += 1
-
-                for table_data in sub.get("tables", []):
-                    table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
-                    table.style = "Table Grid"
-                    for r, row in enumerate(table_data):
-                        for c, val in enumerate(row):
-                            table.cell(r, c).text = str(val)
-                    doc.add_paragraph(f"Table {table_count}: Data Table").alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    table_count += 1
-
-                for f_idx, formula in enumerate(sub.get("formulas", []), 1):
-                    img_path = generate_latex_formula_image(formula)
-                    if img_path:
-                        doc.add_picture(img_path, width=Inches(2))
-                        caption = doc.add_paragraph(f"Equation {idx}.{sub_idx}.{f_idx}: {formula}")
-                        caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-        # References
-        refs = doc.add_paragraph("References")
-        format_heading(refs)
-        for i, ref in enumerate(data['references'], 1):
-            doc.add_paragraph(f"[{i}] {ref}")
-
-        # Appendix
-        if "appendix" in data:
-            appendix = doc.add_paragraph("Appendix")
-            format_heading(appendix)
-            for i, content in enumerate(data["appendix"], 1):
-                para = doc.add_paragraph(f"{chr(64 + i)}. {content}")
-                para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-
-        buffer = BytesIO()
-        doc.save(buffer)
-        return buffer.getvalue()
-
-    except Exception as e:
-        logger.error(f"IEEE document generation failed: {e}")
-        raise RuntimeError(f"Failed to generate document: {e}")
 
 def set_single_column_layout(section):
     sectPr = section._sectPr
-    for col in sectPr.xpath('./w:cols'):
-        sectPr.remove(col)
+    for c in sectPr.xpath('./w:cols'):
+        sectPr.remove(c)
     cols = OxmlElement('w:cols')
     cols.set(qn('w:num'), '1')
     sectPr.append(cols)
 
+
 def set_ieee_column_layout(section):
     sectPr = section._sectPr
-    for col in sectPr.xpath('./w:cols'):
-        sectPr.remove(col)
+    for c in sectPr.xpath('./w:cols'):
+        sectPr.remove(c)
     cols = OxmlElement('w:cols')
     cols.set(qn('w:num'), '2')
     cols.set(qn('w:space'), '720')
     sectPr.append(cols)
+
 
 def format_heading(paragraph):
     run = paragraph.runs[0]
@@ -237,3 +149,172 @@ def format_heading(paragraph):
     run.font.color.rgb = RGBColor(0, 0, 0)
     paragraph.paragraph_format.space_before = Pt(8)
     paragraph.paragraph_format.space_after = Pt(4)
+
+
+def generate_ieee_paper(data: dict) -> bytes:
+    try:
+        doc = Document()
+
+        # ——— Global style ——————————————————————————————
+        normal = doc.styles['Normal']
+        normal.font.name = 'Times New Roman'
+        normal.font.size = Pt(10)
+
+        sec = doc.sections[0]
+        sec.page_width = Inches(8.5)
+        sec.page_height = Inches(11)
+        sec.left_margin = Inches(0.75)
+        sec.right_margin = Inches(0.75)
+        sec.top_margin = Inches(1.0)
+        sec.bottom_margin = Inches(1.0)
+        set_single_column_layout(sec)
+
+        # ——— Title & Authors ——————————————————————————————
+        t = doc.add_paragraph()
+        t.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = t.add_run(data['title'].upper())
+        r.bold = True
+        r.font.size = Pt(16)
+
+        for line in (
+            ", ".join(data['authors']),
+            "; ".join(data['affiliations']),
+            ", ".join(data['emails'])
+        ):
+            p = doc.add_paragraph(line)
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        doc.add_paragraph()
+        doc.add_section(0)
+        set_ieee_column_layout(doc.sections[-1])
+
+        # ——— Abstract ——————————————————————————————
+        format_heading(doc.add_paragraph("Abstract"))
+        abs_text = " ".join(data['abstract']) if isinstance(data['abstract'], list) else data['abstract']
+        for para in abs_text.split('\n'):
+            p = doc.add_paragraph(para)
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            for run in p.runs:
+                run.bold = True
+
+        # ——— Keywords ——————————————————————————————
+        format_heading(doc.add_paragraph("Keywords"))
+        kw = doc.add_paragraph(", ".join(data['keywords']))
+        kw.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+        # ——— Main Sections ——————————————————————————————
+        fig_ct = tbl_ct = 1
+        ref_idx = 1
+        extracted = []
+
+        for i, sec_data in enumerate(data['sections'], 1):
+            roman = to_roman(i)
+            format_heading(doc.add_paragraph(f"{roman}. {sec_data['heading'].upper()}"))
+
+            # Content + citations
+            content = sec_data.get("content", "").strip()
+            if content:
+                p = doc.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                mod, urls = extract_and_replace_hyperlinks(content, ref_idx)
+                insert_footnotes(p, mod)
+                p_runs = p.runs  # text now has "[n]" placeholders; no inline links per IEEE
+                ref_idx += len(urls)
+                extracted.extend(urls)
+
+            # Images
+            for img in sec_data.get("images", []):
+                doc.add_picture(img["path"], width=Inches(3))
+                cap = doc.add_paragraph(f"Fig. {fig_ct}: {img['caption']}")
+                cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                fig_ct += 1
+
+            # Tables
+            for table in sec_data.get("tables", []):
+                tbl = doc.add_table(rows=len(table), cols=len(table[0]))
+                tbl.style = "Table Grid"
+                for r, row in enumerate(table):
+                    for c, val in enumerate(row):
+                        tbl.cell(r, c).text = str(val)
+                doc.add_paragraph(f"Table {tbl_ct}: Data Table").alignment = WD_ALIGN_PARAGRAPH.CENTER
+                tbl_ct += 1
+
+            # Formulas
+            for f_i, formula in enumerate(sec_data.get("formulas", []), 1):
+                path = generate_latex_formula_image(formula)
+                if path:
+                    doc.add_picture(path, width=Inches(2))
+                    cap = doc.add_paragraph(f"Equation {i}.{f_i}: {formula}")
+                    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            # Subsections
+            for j, sub in enumerate(sec_data.get("subsections", []), 1):
+                format_heading(doc.add_paragraph(f"{roman}.{chr(64+j)} {sub['heading']}"))
+
+                cnt = sub.get("content", "").strip()
+                if cnt:
+                    p = doc.add_paragraph()
+                    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    mod, urls = extract_and_replace_hyperlinks(cnt, ref_idx)
+                    insert_footnotes(p, mod)
+                    ref_idx += len(urls)
+                    extracted.extend(urls)
+
+                for img in sub.get("images", []):
+                    doc.add_picture(img["path"], width=Inches(3))
+                    cap = doc.add_paragraph(f"Fig. {fig_ct}: {img['caption']}")
+                    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    fig_ct += 1
+
+                for table in sub.get("tables", []):
+                    tbl = doc.add_table(rows=len(table), cols=len(table[0]))
+                    tbl.style = "Table Grid"
+                    for r, row in enumerate(table):
+                        for c, val in enumerate(row):
+                            tbl.cell(r, c).text = str(val)
+                    doc.add_paragraph(f"Table {tbl_ct}: Data Table").alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    tbl_ct += 1
+
+                for f_i, formula in enumerate(sub.get("formulas", []), 1):
+                    path = generate_latex_formula_image(formula)
+                    if path:
+                        doc.add_picture(path, width=Inches(2))
+                        cap = doc.add_paragraph(f"Equation {roman}.{j}.{f_i}: {formula}")
+                        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # ——— References ——————————————————————————————
+        # Strip leading [n] from manual refs
+        manual = []
+        for r in data.get('references', []):
+            m = re.match(r'^\[\d+\]\s*(.*)$', r)
+            manual.append(m.group(1) if m else r)
+
+        # Dedupe extracted
+        uniq = list(dict.fromkeys(extracted))
+        filtered = [u for u in uniq if not any(u in mr for mr in manual)]
+
+        combined = manual + [f"[Online]. Available: {u}" for u in filtered]
+
+        format_heading(doc.add_paragraph("REFERENCES"))
+        for idx, ref in enumerate(combined, 1):
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            # Number + hyperlink any URLs
+            add_hyperlinks(p, f"[{idx}] {ref}")
+
+        # ——— Appendix ——————————————————————————————
+        if data.get('appendix'):
+            format_heading(doc.add_paragraph("Appendix"))
+            for item in data['appendix']:
+                p = doc.add_paragraph(item)
+                p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+        # ——— Write out ——————————————————————————————
+        out = BytesIO()
+        doc.save(out)
+        out.seek(0)
+        return out.read()
+
+    except Exception as e:
+        logger.error(f"Error generating IEEE paper: {e}")
+        raise

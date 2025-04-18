@@ -2,7 +2,6 @@ import logging
 import re
 import tempfile
 from io import BytesIO
-
 import matplotlib.pyplot as plt
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -10,6 +9,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.opc.constants import RELATIONSHIP_TYPE
 from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_TAB_ALIGNMENT
+from docx.shared import Inches
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -142,6 +143,26 @@ def set_ieee_column_layout(section):
     cols.set(qn('w:space'), '720')
     sectPr.append(cols)
 
+def insert_equation(doc, image_path: str, eq_number: int):
+    table = doc.add_table(rows=1, cols=2)
+    table.allow_autofit = True
+    table.columns[0].width = Inches(4.5)
+    table.columns[1].width = Inches(1.5)
+
+    # Insert image in left cell
+    cell_img = table.cell(0, 0)
+    paragraph_img = cell_img.paragraphs[0]
+    run_img = paragraph_img.add_run()
+    run_img.add_picture(image_path, width=Inches(2.5))
+    paragraph_img.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+    # Insert number in right cell
+    cell_num = table.cell(0, 1)
+    paragraph_num = cell_num.paragraphs[0]
+    paragraph_num.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    paragraph_num.add_run(f"({eq_number})")
+
+
 def format_Subheading(paragraph):
     run = paragraph.runs[0]
     run.bold = False
@@ -220,6 +241,7 @@ def generate_ieee_paper(data: dict) -> bytes:
         fig_ct = tbl_ct = 1
         ref_idx = 1
         extracted = []
+        equation_counter = 1
 
         for i, sec_data in enumerate(data['sections'], 1):
             roman = to_roman(i)
@@ -257,9 +279,11 @@ def generate_ieee_paper(data: dict) -> bytes:
             for f_i, formula in enumerate(sec_data.get("formulas", []), 1):
                 path = generate_latex_formula_image(formula)
                 if path:
-                    doc.add_picture(path, width=Inches(2))
-                    cap = doc.add_paragraph(f"Equation {i}.{f_i}: {formula}")
-                    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        insert_equation(doc, path, equation_counter)
+                        equation_counter += 1
+                        #doc.add_picture(path, width=Inches(2))
+                        #cap = doc.add_paragraph(f"Equation {roman}.{j}.{f_i}: {formula}")
+                        #cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
             # Subsections
             for j, sub in enumerate(sec_data.get("subsections", []), 1):
@@ -292,9 +316,11 @@ def generate_ieee_paper(data: dict) -> bytes:
                 for f_i, formula in enumerate(sub.get("formulas", []), 1):
                     path = generate_latex_formula_image(formula)
                     if path:
-                        doc.add_picture(path, width=Inches(2))
-                        cap = doc.add_paragraph(f"Equation {roman}.{j}.{f_i}: {formula}")
-                        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        insert_equation(doc, path, equation_counter)
+                        equation_counter += 1
+                        #doc.add_picture(path, width=Inches(2))
+                        #cap = doc.add_paragraph(f"Equation {roman}.{j}.{f_i}: {formula}")
+                        #cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
         # ——— References ——————————————————————————————
         # Strip leading [n] from manual refs

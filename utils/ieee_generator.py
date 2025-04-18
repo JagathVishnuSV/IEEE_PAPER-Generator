@@ -142,14 +142,28 @@ def set_ieee_column_layout(section):
     cols.set(qn('w:space'), '720')
     sectPr.append(cols)
 
-
-def format_heading(paragraph):
+def format_Subheading(paragraph):
     run = paragraph.runs[0]
-    run.bold = True
+    run.bold = False
     run.font.color.rgb = RGBColor(0, 0, 0)
     paragraph.paragraph_format.space_before = Pt(8)
     paragraph.paragraph_format.space_after = Pt(4)
 
+def format_heading(paragraph):
+    run = paragraph.runs[0]
+    run.bold = False
+    run.font.color.rgb = RGBColor(0, 0, 0)
+    paragraph.paragraph_format.space_before = Pt(8)
+    paragraph.paragraph_format.space_after = Pt(4)
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+def italic_format_heading(paragraph):
+    run = paragraph.runs[0]
+    run.italic = True
+    run.bold = True
+    run.font.color.rgb = RGBColor(0, 0, 0)
+    paragraph.paragraph_format.space_before = Pt(8)
+    paragraph.paragraph_format.space_after = Pt(4)
 
 def generate_ieee_paper(data: dict) -> bytes:
     try:
@@ -189,7 +203,7 @@ def generate_ieee_paper(data: dict) -> bytes:
         set_ieee_column_layout(doc.sections[-1])
 
         # ——— Abstract ——————————————————————————————
-        format_heading(doc.add_paragraph("Abstract"))
+        italic_format_heading(doc.add_paragraph("Abstract—"))
         abs_text = " ".join(data['abstract']) if isinstance(data['abstract'], list) else data['abstract']
         for para in abs_text.split('\n'):
             p = doc.add_paragraph(para)
@@ -198,7 +212,7 @@ def generate_ieee_paper(data: dict) -> bytes:
                 run.bold = True
 
         # ——— Keywords ——————————————————————————————
-        format_heading(doc.add_paragraph("Keywords"))
+        format_Subheading(doc.add_paragraph("Keywords"))
         kw = doc.add_paragraph(", ".join(data['keywords']))
         kw.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
@@ -249,7 +263,7 @@ def generate_ieee_paper(data: dict) -> bytes:
 
             # Subsections
             for j, sub in enumerate(sec_data.get("subsections", []), 1):
-                format_heading(doc.add_paragraph(f"{roman}.{chr(64+j)} {sub['heading']}"))
+                format_Subheading(doc.add_paragraph(f"{chr(64+j)}. {sub['heading']}"))
 
                 cnt = sub.get("content", "").strip()
                 if cnt:
